@@ -5,31 +5,44 @@ const cors = require("cors");
 require("dotenv").config();
 
 const app = express();
-app.use(cors());
+
+// Production CORS configuration
+app.use(
+  cors({
+    origin: [
+      "https://shuleai.onrender.com/",
+      "http://127.0.0.1:5502/index.html",
+    ],
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 
-// Daraja API configuration
+// Daraja API configuration - PRODUCTION
 const config = {
   consumerKey: process.env.DARAJA_CONSUMER_KEY,
   consumerSecret: process.env.DARAJA_CONSUMER_SECRET,
-  businessShortCode: process.env.BUSINESS_SHORT_CODE,
+  businessShortCode: parseInt(process.env.BUSINESS_SHORT_CODE), // Ensure it's a number
   passkey: process.env.DARAJA_PASSKEY,
   callbackUrl: process.env.CALLBACK_URL,
-  environment: process.env.NODE_ENV || "sandbox",
+  environment: "production", // Force production environment
 };
 
-// Base URL based on environment
-const baseURL =
-  config.environment === "production"
-    ? "https://api.safaricom.co.ke"
-    : "https://sandbox.safaricom.co.ke";
+// PRODUCTION Base URL
+const baseURL = "https://api.safaricom.co.ke";
 
-// User and subscription storage (use database in production)
-const users = new Map(); // phoneNumber -> userData
-const subscriptions = new Map(); // phoneNumber -> subscriptionData
-const paymentStore = new Map(); // checkoutRequestID -> paymentData
+// In production, you should use a database instead of in-memory storage
+const users = new Map();
+const subscriptions = new Map();
+const paymentStore = new Map();
 
-// Get access token
+// Log database warning
+console.log(
+  "⚠️  PRODUCTION: Using in-memory storage. Implement database for persistence."
+);
+
+// Get access token - PRODUCTION
 async function getAccessToken() {
   try {
     const auth = Buffer.from(
@@ -42,20 +55,21 @@ async function getAccessToken() {
         headers: {
           Authorization: `Basic ${auth}`,
         },
+        timeout: 10000, // Shorter timeout for production
       }
     );
 
     return response.data.access_token;
   } catch (error) {
     console.error(
-      "Error getting access token:",
+      "PRODUCTION - Error getting access token:",
       error.response?.data || error.message
     );
     throw new Error("Failed to get access token");
   }
 }
 
-// Generate password for STK Push
+// Generate password for STK Push - PRODUCTION
 function generatePassword() {
   const timestamp = new Date()
     .toISOString()
@@ -71,6 +85,8 @@ function generatePassword() {
 function calculateExpiry(planType) {
   const now = new Date();
   switch (planType) {
+    case "weekly":
+      return new Date(now.setDate(now.getDate() + 7));
     case "monthly":
       return new Date(now.setMonth(now.getMonth() + 1));
     case "quarterly":
@@ -90,13 +106,27 @@ function isSubscriptionActive(phoneNumber) {
   return new Date(subscription.expiresAt) > new Date();
 }
 
-// STK Push endpoint - UPDATED for website subscription
+// Validate phone number for production
+function validateProductionPhone(phoneNumber) {
+  // Remove any non-digit characters
+  const cleanPhone = phoneNumber.replace(/\D/g, "");
+
+  // Kenyan phone numbers must be 12 digits starting with 254
+  if (cleanPhone.length !== 12 || !cleanPhone.startsWith("254")) {
+    return false;
+  }
+
+  // Check if it's a valid Kenyan carrier (2547... or 2541...)
+  const thirdDigit = cleanPhone.charAt(3);
+  return thirdDigit === "7" || thirdDigit === "1";
+}
+
+// STK Push endpoint - PRODUCTION READY
 app.post("/api/initiate-payment", async (req, res) => {
   try {
-    const { phoneNumber, amount, accountReference, transactionDesc, planType } =
-      req.body;
+    const { phoneNumber, amount, planType } = req.body;
 
-    console.log("Initiating website subscription for:", {
+    console.log("PRODUCTION - Initiating payment for:", {
       phoneNumber,
       amount,
       planType,
@@ -107,6 +137,22 @@ app.post("/api/initiate-payment", async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Missing required fields: phoneNumber, amount, planType",
+      });
+    }
+
+    // Validate phone number format for production
+    if (!validateProductionPhone(phoneNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format. Use format: 2547XXXXXXXX",
+      });
+    }
+
+    // Validate amount (minimum 10 KSh in production)
+    if (amount < 10) {
+      return res.status(400).json({
+        success: false,
+        message: "Minimum payment amount is 10 KSh",
       });
     }
 
@@ -123,11 +169,11 @@ app.post("/api/initiate-payment", async (req, res) => {
       PartyB: config.businessShortCode,
       PhoneNumber: phoneNumber,
       CallBackURL: `${config.callbackUrl}/api/payment-callback`,
-      AccountReference: "SHULEAI_SUB", // Fixed for website subscription
-      TransactionDesc: `Website Subscription - ${planType}`,
+      AccountReference: "SHULEAI_SUB",
+      TransactionDesc: `ShuleAI Subscription - ${planType}`,
     };
 
-    console.log("Sending STK Push request for website subscription...");
+    console.log("PRODUCTION - Sending STK Push request...");
 
     const response = await axios.post(
       `${baseURL}/mpesa/stkpush/v1/processrequest`,
@@ -141,9 +187,9 @@ app.post("/api/initiate-payment", async (req, res) => {
       }
     );
 
-    console.log("STK Push response:", response.data);
+    console.log("PRODUCTION - STK Push response:", response.data);
 
-    // Store payment info with subscription data
+    // Store payment info
     const paymentInfo = {
       checkoutRequestID: response.data.CheckoutRequestID,
       phoneNumber,
@@ -153,12 +199,14 @@ app.post("/api/initiate-payment", async (req, res) => {
       timestamp: new Date(),
       status: "pending",
       merchantRequestID: response.data.MerchantRequestID,
-      isWebsiteSubscription: true, // Mark as website subscription
+      isWebsiteSubscription: true,
+      environment: "production",
     };
 
     paymentStore.set(response.data.CheckoutRequestID, paymentInfo);
+
     console.log(
-      `📝 Stored website subscription payment: ${response.data.CheckoutRequestID}`
+      `PRODUCTION - Stored payment: ${response.data.CheckoutRequestID}`
     );
 
     res.json({
@@ -166,24 +214,34 @@ app.post("/api/initiate-payment", async (req, res) => {
       checkoutRequestID: response.data.CheckoutRequestID,
       responseDescription: response.data.ResponseDescription,
       customerMessage: response.data.CustomerMessage,
+      environment: "production",
     });
   } catch (error) {
     console.error(
-      "Payment initiation error:",
+      "PRODUCTION - Payment initiation error:",
       error.response?.data || error.message
     );
+
+    // More specific error handling for production
+    let errorMessage = "Payment initiation failed";
+    if (error.response?.data?.errorCode === "400.002.02") {
+      errorMessage = "Invalid callback URL configuration";
+    } else if (error.response?.data?.errorCode === "400.002.01") {
+      errorMessage = "Invalid business short code or passkey";
+    }
+
     res.status(500).json({
       success: false,
-      message:
-        error.response?.data?.errorMessage || "Payment initiation failed",
+      message: error.response?.data?.errorMessage || errorMessage,
+      environment: "production",
     });
   }
 });
 
-// Payment callback endpoint - UPDATED for subscription management
+// Payment callback endpoint - PRODUCTION
 app.post("/api/payment-callback", (req, res) => {
   console.log(
-    "💰 Payment callback received:",
+    "PRODUCTION - Payment callback received:",
     JSON.stringify(req.body, null, 2)
   );
 
@@ -195,7 +253,7 @@ app.post("/api/payment-callback", (req, res) => {
     const checkoutRequestID = stkCallback.CheckoutRequestID;
 
     console.log(
-      `🔄 Processing callback for: ${checkoutRequestID}, ResultCode: ${resultCode}`
+      `PRODUCTION - Processing callback: ${checkoutRequestID}, ResultCode: ${resultCode}`
     );
 
     if (paymentStore.has(checkoutRequestID)) {
@@ -213,11 +271,10 @@ app.post("/api/payment-callback", (req, res) => {
           (item) => item.Name === "TransactionDate"
         )?.Value;
 
-        // If this is a website subscription, activate user access
+        // Activate user subscription
         if (paymentInfo.isWebsiteSubscription) {
           const expiresAt = calculateExpiry(paymentInfo.planType);
 
-          // Create or update user subscription
           const userData = {
             phoneNumber: paymentInfo.phoneNumber,
             subscription: {
@@ -227,6 +284,7 @@ app.post("/api/payment-callback", (req, res) => {
               expiresAt: expiresAt,
               isActive: true,
               mpesaReceiptNumber: paymentInfo.mpesaReceiptNumber,
+              transactionDate: paymentInfo.transactionDate,
             },
             lastActive: new Date(),
           };
@@ -235,10 +293,11 @@ app.post("/api/payment-callback", (req, res) => {
           users.set(paymentInfo.phoneNumber, userData);
 
           console.log(
-            `✅ Website subscription activated for: ${paymentInfo.phoneNumber}`
+            `PRODUCTION - Subscription activated: ${paymentInfo.phoneNumber}`
           );
-          console.log(`📅 Subscription expires: ${expiresAt}`);
-          console.log(`💳 Plan: ${paymentInfo.planType}`);
+          console.log(
+            `PRODUCTION - Plan: ${paymentInfo.planType}, Expires: ${expiresAt}`
+          );
         }
       } else {
         // Payment failed
@@ -247,57 +306,49 @@ app.post("/api/payment-callback", (req, res) => {
         paymentInfo.failureReason = stkCallback.ResultDesc;
 
         console.log(
-          `❌ Payment failed: ${checkoutRequestID} - ${stkCallback.ResultDesc}`
+          `PRODUCTION - Payment failed: ${checkoutRequestID} - ${stkCallback.ResultDesc}`
         );
       }
 
-      // Update the store
       paymentStore.set(checkoutRequestID, paymentInfo);
     } else {
-      console.log(`⚠️ Payment not found in store: ${checkoutRequestID}`);
+      console.log(`PRODUCTION - Payment not found: ${checkoutRequestID}`);
     }
   }
 
   res.status(200).json({ ResultCode: 0, ResultDesc: "Success" });
 });
 
-// Check payment status
+// Enhanced payment status check
 app.get("/api/payment-status/:checkoutRequestID", (req, res) => {
   const { checkoutRequestID } = req.params;
 
-  console.log(`🔍 Checking payment status for: ${checkoutRequestID}`);
-
   if (paymentStore.has(checkoutRequestID)) {
     const paymentInfo = paymentStore.get(checkoutRequestID);
-    console.log(
-      `📊 Payment status: ${checkoutRequestID} -> ${paymentInfo.status}`
-    );
 
     res.json({
       success: true,
       payment: paymentInfo,
       status: paymentInfo.status,
+      environment: "production",
     });
   } else {
-    console.log(`❓ Payment not found: ${checkoutRequestID}`);
     res.status(404).json({
       success: false,
       message: "Payment not found",
+      environment: "production",
     });
   }
 });
 
-// Check user subscription status
+// Enhanced user status check
 app.get("/api/user-status/:phoneNumber", (req, res) => {
   const { phoneNumber } = req.params;
-
-  console.log(`🔍 Checking user status for: ${phoneNumber}`);
 
   const subscription = subscriptions.get(phoneNumber);
   const isActive = isSubscriptionActive(phoneNumber);
 
   if (subscription) {
-    console.log(`📊 User ${phoneNumber} subscription active: ${isActive}`);
     res.json({
       success: true,
       user: {
@@ -310,9 +361,9 @@ app.get("/api/user-status/:phoneNumber", (req, res) => {
             (1000 * 60 * 60 * 24)
         ),
       },
+      environment: "production",
     });
   } else {
-    console.log(`❓ User not found or no subscription: ${phoneNumber}`);
     res.json({
       success: true,
       user: {
@@ -322,28 +373,21 @@ app.get("/api/user-status/:phoneNumber", (req, res) => {
         expiresAt: null,
         daysRemaining: 0,
       },
+      environment: "production",
     });
   }
 });
 
-// List all users and subscriptions (for admin/debugging)
-app.get("/api/admin/users", (req, res) => {
-  const userList = Array.from(users.entries()).map(([phone, userData]) => ({
-    phoneNumber: phone,
-    ...userData,
-    isActive: isSubscriptionActive(phone),
-  }));
-
-  console.log(`📋 Total users: ${userList.length}`);
-
-  res.json({
-    users: userList,
-    total: userList.length,
-    active: userList.filter((u) => u.isActive).length,
-  });
+// Add security middleware for production
+app.use((req, res, next) => {
+  // Add security headers
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  next();
 });
 
-// Health check endpoint
+// Health check with production info
 app.get("/api/health", (req, res) => {
   const activeSubscriptions = Array.from(subscriptions.entries()).filter(
     ([phone]) => isSubscriptionActive(phone)
@@ -351,20 +395,34 @@ app.get("/api/health", (req, res) => {
 
   res.json({
     status: "OK",
-    environment: config.environment,
+    environment: "production",
     timestamp: new Date().toISOString(),
     stats: {
       totalUsers: users.size,
       activeSubscriptions: activeSubscriptions,
       totalPayments: paymentStore.size,
     },
+    version: "1.0.0",
+    production: true,
   });
+});
+
+// Graceful shutdown handling
+process.on("SIGTERM", () => {
+  console.log("PRODUCTION - SIGTERM received, shutting down gracefully");
+  process.exit(0);
+});
+
+process.on("SIGINT", () => {
+  console.log("PRODUCTION - SIGINT received, shutting down gracefully");
+  process.exit(0);
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📱 Environment: ${config.environment}`);
+  console.log(`🚀 PRODUCTION Server running on port ${PORT}`);
+  console.log(`📱 Environment: PRODUCTION`);
   console.log(`🔗 Callback URL: ${config.callbackUrl}`);
-  console.log(`👥 User subscription system enabled`);
+  console.log(`💳 Business Short Code: ${config.businessShortCode}`);
+  console.log(`⚠️  Remember to implement database persistence!`);
 });
