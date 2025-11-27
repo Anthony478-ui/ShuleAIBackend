@@ -405,7 +405,7 @@ const config = {
 const baseURL = "https://api.safaricom.co.ke";
 
 // In production, you should use a database instead of in-memory storage
-// For now, we'll keep the in-memory storage but add persistence warnings
+
 const users = new Map();
 const subscriptions = new Map();
 const paymentStore = new Map();
