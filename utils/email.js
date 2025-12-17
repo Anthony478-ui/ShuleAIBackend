@@ -8,12 +8,32 @@ const {
 class EmailService {
   constructor() {
     this.transporter = nodemailer.createTransport({
-      service: process.env.EMAIL_SERVICE || "gmail",
+      host: "smtp.gmail.com",
+      port: 465, // Use SSL port
+      secure: true, // true for 465, false for other ports
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASSWORD,
       },
+      connectionTimeout: 10000, // 10 seconds timeout
+      greetingTimeout: 10000, // 10 seconds timeout
+      socketTimeout: 10000, // 10 seconds timeout
+      tls: {
+        rejectUnauthorized: false, // For Render/cloud environments
+      },
     });
+
+    // Verify connection configuration
+    this.verifyConnection();
+  }
+
+  async verifyConnection() {
+    try {
+      await this.transporter.verify();
+      console.log("✅ SMTP connection verified");
+    } catch (error) {
+      console.warn("⚠️ SMTP connection warning:", error.message);
+    }
   }
 
   async sendPaymentConfirmation(paymentData) {
